@@ -120,56 +120,76 @@ router.get("/:id", async (req, res) => {
 });
 
 /*
-UPDATE ROOM
+UPDATE ROOM (DENGAN DETEKTOR LOG UNTUK MELACAK ERROR TERSEMBUNYI)
 */
 router.put("/:id", async (req, res) => {
   try {
+    const { id } = req.params;
     const {
-        room_name,
-        price,
-        capacity,
-        total_rooms,
-        image_url,
-        description
-      } = req.body;
+      room_name,
+      price,
+      capacity,
+      total_rooms,
+      image_url,
+      description
+    } = req.body;
+
+    // 🔍 LOG DETEKTOR 1: Memeriksa data yang masuk dari React Frontend
+    console.log("=== MASUK REQUEST UPDATE ROOM ===");
+    console.log("ID dari URL (req.params.id):", id, `(Tipe: ${typeof id})`);
+    console.log("Body dari Frontend (req.body):", req.body);
+
+    // Konversi tipe data agar aman di PostgreSQL
+    const parsedPrice = parseInt(price, 10) || 0;
+    const parsedCapacity = parseInt(capacity, 10) || 1;
+    const parsedTotalRooms = parseInt(total_rooms, 10) || 0;
 
     const result = await pool.query(
-        `
-        UPDATE rooms
-        SET
-          room_name=$1,
-          price=$2,
-          capacity=$3,
-          total_rooms=$4,
-          image_url=$5,
-          description=$6
-        WHERE id=$7
-        RETURNING *
-        `,
-        [
-          room_name,
-          price,
-          capacity,
-          total_rooms,
-          image_url,
-          description,
-          req.params.id
-        ]
+      `
+      UPDATE rooms
+      SET
+        room_name = $1,
+        price = $2,
+        capacity = $3,
+        total_rooms = $4,
+        available_rooms = $5,
+        image_url = $6,
+        description = $7
+      WHERE id = $8
+      RETURNING *
+      `,
+      [
+        room_name,
+        parsedPrice,
+        parsedCapacity,
+        parsedTotalRooms,
+        parsedTotalRooms, // available_rooms disinkronkan dengan total_rooms
+        image_url,
+        description,
+        id
+      ]
     );
 
-    if(result.rows.length === 0){
-        return res.status(404).json({
-          message:"Room tidak ditemukan"
-        });
-      }
-  
+    // 🔍 LOG DETEKTOR 2: Memeriksa hasil eksekusi query PostgreSQL
+    console.log("Jumlah baris yang berhasil diubah (rowCount):", result.rowCount);
+    console.log("Data hasil update dari DB:", result.rows);
+    console.log("=================================");
 
+    // Jika rowCount === 0, berarti klausa WHERE id = $8 TIDAK MENEMUKAN data yang cocok!
+    if (result.rowCount === 0 || result.rows.length === 0) {
+      return res.status(404).json({
+        message: `Gagal update! Kamar dengan ID ${id} tidak ditemukan di database.`
+      });
+    }
+
+    // Kembalikan data yang sukses diperbarui
     res.json(result.rows[0]);
-  } catch (error) {
-    console.log(error);
 
+  } catch (error) {
+    console.error("❌ CRASH ERROR SAAT UPDATE ROOM:", error.message);
     res.status(500).json({
       message: "Server Error",
+      error: error.message
     });
   }
 });

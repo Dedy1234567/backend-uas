@@ -78,7 +78,8 @@ router.get("/:id", async (req, res) => {
         city,
         address,
         description,
-        image_url
+        image_url,
+        rating
       } = req.body;
   
       const result = await pool.query(
@@ -89,9 +90,10 @@ router.get("/:id", async (req, res) => {
           city,
           address,
           description,
-          image_url
+          image_url,
+          rating
         )
-        VALUES($1,$2,$3,$4,$5)
+        VALUES($1,$2,$3,$4,$5,$6)
         RETURNING *
         `,
         [
@@ -99,7 +101,8 @@ router.get("/:id", async (req, res) => {
           city,
           address,
           description,
-          image_url
+          image_url,
+          rating
         ]
       );
   
@@ -129,7 +132,8 @@ router.get("/:id", async (req, res) => {
         city,
         address,
         description,
-        image_url
+        image_url,
+        rating
       } = req.body;
   
       const result = await pool.query(
@@ -140,8 +144,9 @@ router.get("/:id", async (req, res) => {
         city=$2,
         address=$3,
         description=$4,
-        image_url=$5
-        WHERE id=$6
+        image_url=$5,
+        rating=$6 
+        WHERE id=$7
         RETURNING *
         `,
         [
@@ -150,6 +155,7 @@ router.get("/:id", async (req, res) => {
           address,
           description,
           image_url,
+          rating,
           id
         ]
       );

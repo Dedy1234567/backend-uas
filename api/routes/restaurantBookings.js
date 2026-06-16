@@ -48,9 +48,10 @@ router.post("/", authMiddleware, async (req, res) => {
             table_id,
             reservation_date,
             reservation_time,
-            guest_count
+            guest_count,
+            status
         )
-        VALUES($1,$2,$3,$4,$5,$6)
+        VALUES($1,$2,$3,$4,$5,$6, 'pending')
         RETURNING *
         `,
       [req.user.id, restaurant_id, table_id, reservation_date, reservation_time, guest_count]
@@ -68,45 +69,100 @@ router.post("/", authMiddleware, async (req, res) => {
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.log(error);
-
-    res.status(500).json({
-      message: "Server Error",
-    });
+    res.status(500).json({ message: "Server Error" });
   }
 });
 
-//GET SEMUA RESERVASI
+/*
+GET SEMUA RESERVASI (Dengan Search, Filter, dan Pagination)
+URL Contoh: /api/reservations?page=1&limit=10&search=budi&status=pending
+*/
 router.get("/", async (req, res) => {
   try {
-    const result = await pool.query(`
-        SELECT
-            rb.*,
-            r.name AS restaurant_name,
-            rt.table_number,
-            u.fullname,
-            u.email
-    
-        FROM restaurant_bookings rb
-    
-        JOIN restaurants r
-        ON r.id = rb.restaurant_id
-    
-        JOIN restaurant_tables rt
-        ON rt.id = rb.table_id
-    
-        JOIN users u
-        ON u.id = rb.user_id
-    
-        ORDER BY rb.id DESC
-    `);
+    // 1. Ambil query parameters dengan nilai default
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || "";
+    const status = req.query.status || "all";
 
-    res.json(result.rows);
+    const offset = (page - 1) * limit;
+
+    // 2. Bangun kondisi WHERE secara dinamis
+    let whereClauses = [];
+    let params = [];
+    let paramIndex = 1;
+
+    // Tambahkan filter pencarian (Nama, Email, Restoran, Meja) jika ada
+    if (search) {
+      whereClauses.push(`(
+        u.fullname ILIKE $${paramIndex} OR 
+        u.email ILIKE $${paramIndex} OR 
+        r.name ILIKE $${paramIndex} OR 
+        rt.table_number::text ILIKE $${paramIndex}
+      )`);
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    // Tambahkan filter status jika spesifik (bukan 'all')
+    if (status !== "all") {
+      whereClauses.push(`rb.status = $${paramIndex}`);
+      params.push(status);
+      paramIndex++;
+    }
+
+    // Gabungkan klausa WHERE jika ada kondisi yang terpenuhi
+    const whereQuery = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+
+    // 3. Query untuk menghitung total data setelah difilter (Penting untuk Pagination info)
+    const countQuery = `
+      SELECT COUNT(*) 
+      FROM restaurant_bookings rb
+      JOIN restaurants r ON r.id = rb.restaurant_id
+      JOIN restaurant_tables rt ON rt.id = rb.table_id
+      JOIN users u ON u.id = rb.user_id
+      ${whereQuery}
+    `;
+    const countResult = await pool.query(countQuery, params);
+    const totalData = parseInt(countResult.rows[0].count);
+    const totalPages = Math.ceil(totalData / limit);
+
+    // 4. Query utama untuk mengambil data dengan LIMIT dan OFFSET
+    const mainParams = [...params, limit, offset];
+    const limitIndex = paramIndex;
+    const offsetIndex = paramIndex + 1;
+
+    const mainQuery = `
+      SELECT
+          rb.*,
+          r.name AS restaurant_name,
+          rt.table_number,
+          u.fullname,
+          u.email
+      FROM restaurant_bookings rb
+      JOIN restaurants r ON r.id = rb.restaurant_id
+      JOIN restaurant_tables rt ON rt.id = rb.table_id
+      JOIN users u ON u.id = rb.user_id
+      ${whereQuery}
+      ORDER BY rb.id DESC
+      LIMIT $${limitIndex} OFFSET $${offsetIndex}
+    `;
+
+    const result = await pool.query(mainQuery, mainParams);
+
+    // 5. Kembalikan response terstruktur lengkap dengan metadata pagination
+    res.json({
+      data: result.rows,
+      pagination: {
+        totalData,
+        totalPages,
+        currentPage: page,
+        limit
+      }
+    });
   } catch (error) {
     console.log(error);
-
-    res.status(500).json({
-      message: "Server Error",
-    });
+    res.status(500).json({ message: "Server Error" });
   }
 });
 
@@ -128,6 +184,7 @@ router.get("/my", authMiddleware, async (req, res) => {
             ON rt.id = rb.table_id
 
             WHERE rb.user_id = $1
+            ORDER BY rb.id DESC
             `,
       [req.user.id]
     );
@@ -135,45 +192,26 @@ router.get("/my", authMiddleware, async (req, res) => {
     res.json(result.rows);
   } catch (error) {
     console.log(error);
-
-    res.status(500).json({
-      message: "Server Error",
-    });
+    res.status(500).json({ message: "Server Error" });
   }
 });
 
-//CANCEL RESERVASION
+//CANCEL RESERVATION
 router.put("/:id/cancel", authMiddleware, async (req, res) => {
   try {
     let bookingResult;
 
-if (req.user.role === "ADMIN") {
-
-  bookingResult = await pool.query(
-    `
-    SELECT *
-    FROM restaurant_bookings
-    WHERE id = $1
-    `,
-    [req.params.id]
-  );
-
-} else {
-
-  bookingResult = await pool.query(
-    `
-    SELECT *
-    FROM restaurant_bookings
-    WHERE id = $1
-    AND user_id = $2
-    `,
-    [
-      req.params.id,
-      req.user.id
-    ]
-  );
-
-}
+    if (req.user.role === "ADMIN") {
+      bookingResult = await pool.query(
+        `SELECT * FROM restaurant_bookings WHERE id = $1`,
+        [req.params.id]
+      );
+    } else {
+      bookingResult = await pool.query(
+        `SELECT * FROM restaurant_bookings WHERE id = $1 AND user_id = $2`,
+        [req.params.id, req.user.id]
+      );
+    }
 
     if (bookingResult.rows.length === 0) {
       return res.status(404).json({
@@ -190,20 +228,12 @@ if (req.user.role === "ADMIN") {
     }
 
     await pool.query(
-      `
-    UPDATE restaurant_bookings
-    SET status='cancelled'
-    WHERE id=$1
-    `,
+      `UPDATE restaurant_bookings SET status='cancelled' WHERE id=$1`,
       [req.params.id]
     );
 
     await pool.query(
-      `
-    UPDATE restaurant_tables
-    SET status='available'
-    WHERE id=$1
-    `,
+      `UPDATE restaurant_tables SET status='available' WHERE id=$1`,
       [booking.table_id]
     );
 
@@ -213,42 +243,58 @@ if (req.user.role === "ADMIN") {
     });
   } catch (error) {
     console.log(error);
-
-    res.status(500).json({
-      message: "Server Error",
-    });
+    res.status(500).json({ message: "Server Error" });
   }
 });
 
-//completed
-router.put("/:id/complete",authMiddleware, async (req, res) => {
-    try {
-      const result = await pool.query(
-        `
+//COMPLETED
+router.put("/:id/complete", authMiddleware, async (req, res) => {
+  try {
+    // Jalankan dengan SQL biasa, ambil table_id untuk mengembalikan status meja
+    const bookingCheck = await pool.query(
+      `SELECT table_id, status FROM restaurant_bookings WHERE id = $1`,
+      [req.params.id]
+    );
+
+    if (bookingCheck.rows.length === 0) {
+      return res.status(404).json({ message: "Reservasi tidak ditemukan" });
+    }
+
+    const booking = bookingCheck.rows[0];
+
+    if (booking.status !== 'pending' && booking.status !== 'confirmed') {
+      return res.status(400).json({ message: "Reservasi tidak dalam status pending/confirmed" });
+    }
+
+    // Update status booking menjadi completed
+    const result = await pool.query(
+      `
         UPDATE restaurant_bookings
         SET status = 'completed'
         WHERE id = $1
-          AND status = 'pending'
         RETURNING *
         `,
-        [req.params.id]
-      );
-   
-      if (result.rows.length === 0) {
-        return res.status(404).json({
-          message:
-            "Reservasi tidak ditemukan atau status bukan pending",
-        });
-      }
-   
-      res.json({
-        message: "Reservasi berhasil ditandai selesai",
-        booking: result.rows[0],
-      });
-    } catch (error) {
-      console.log(error);
-      res.status(500).json({ message: "Server Error" });
-    }
-  });
+      [req.params.id]
+    );
+
+    // PERBAIKAN: Kembalikan status meja menjadi 'available' agar bisa dipesan kembali
+    await pool.query(
+      `
+        UPDATE restaurant_tables
+        SET status = 'available'
+        WHERE id = $1
+        `,
+      [booking.table_id]
+    );
+
+    res.json({
+      message: "Reservasi berhasil ditandai selesai",
+      booking: result.rows[0],
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Server Error" });
+  }
+});
 
 export default router;

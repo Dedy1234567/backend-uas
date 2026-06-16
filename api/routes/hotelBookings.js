@@ -90,42 +90,98 @@ router.post("/", authMiddleware, async (req, res) => {
 //
 router.get("/", async (req, res) => {
   try {
-    const result = await pool.query(
-      `
-        SELECT
+    // 1. Ambil query parameters dengan pengamanan nilai default
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search ? req.query.search.trim() : "";
+    const status = req.query.status ? req.query.status.trim().toLowerCase() : "all";
+
+    const offset = (page - 1) * limit;
+
+    // 2. Bangun kondisi WHERE secara dinamis
+    let whereClauses = [];
+    let params = [];
+    let paramIndex = 1;
+
+    // Tambahkan filter pencarian (Nama User, Email, Nama Kamar, Nama Hotel)
+    if (search !== "") {
+      whereClauses.push(`(
+        u.fullname ILIKE $${paramIndex} OR 
+        u.email ILIKE $${paramIndex} OR 
+        r.room_name ILIKE $${paramIndex} OR 
+        h.name ILIKE $${paramIndex}
+      )`);
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    // Tambahkan filter status jika bukan 'all'
+    if (status !== "all" && status !== "") {
+      whereClauses.push(`hb.status = $${paramIndex}`);
+      params.push(status);
+      paramIndex++;
+    }
+
+    const whereQuery = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+
+    // 3. Query untuk menghitung total data setelah difilter
+    const countQuery = `
+      SELECT COUNT(*) 
+      FROM hotel_bookings hb
+      JOIN rooms r ON hb.room_id = r.id
+      JOIN hotels h ON r.hotel_id = h.id
+      JOIN users u ON hb.user_id = u.id
+      ${whereQuery}
+    `;
+    const countResult = await pool.query(countQuery, params);
+    const totalData = parseInt(countResult.rows[0].count);
+    const totalPages = Math.ceil(totalData / limit);
+
+    // 4. PERBAIKAN DI SINI: Menyusun array parameter & index secara aman
+    const mainParams = [...params]; // Copy params filter pencarian/status terlebih dahulu
+    
+    mainParams.push(limit);  // Masukkan limit ke dalam array
+    const limitIndex = mainParams.length; // Otomatis mendapatkan nomor urut placeholder ($) tepat untuk LIMIT
+    
+    mainParams.push(offset); // Masukkan offset ke dalam array
+    const offsetIndex = mainParams.length; // Otomatis mendapatkan nomor urut placeholder ($) tepat untuk OFFSET
+
+    const mainQuery = `
+      SELECT
         hb.*,
         r.room_name,
         h.name AS hotel_name,
         u.fullname,
         u.email
+      FROM hotel_bookings hb
+      JOIN rooms r ON hb.room_id = r.id
+      JOIN hotels h ON r.hotel_id = h.id
+      JOIN users u ON hb.user_id = u.id
+      ${whereQuery}
+      ORDER BY hb.id DESC
+      LIMIT $${limitIndex} OFFSET $${offsetIndex}
+    `;
 
-        FROM hotel_bookings hb
+    const result = await pool.query(mainQuery, mainParams);
 
-        JOIN rooms r
-        ON hb.room_id = r.id
-
-        JOIN hotels h
-        ON r.hotel_id = h.id
-
-        JOIN users u
-        ON hb.user_id = u.id
-
-        ORDER BY hb.id DESC
-        `
-    );
-
-    res.json(result.rows);
-  } catch (error) {
-    console.log(error);
-
-    res.status(500).json({
-      message: "Server Error",
+    // 5. Kembalikan response berstruktur lengkap beserta metadata pagination
+    res.json({
+      data: result.rows,
+      pagination: {
+        totalData,
+        totalPages,
+        currentPage: page,
+        limit
+      }
     });
+  } catch (error) {
+    console.error("ERROR AT GET HOTEL BOOKINGS:", error);
+    res.status(500).json({ message: "Server Error" });
   }
 });
 
 //
-// GET MY BOOKINGS (Perbaikan Final Sesuai Skema Database)
+// GET MY BOOKINGS 
 //
 router.get("/my", authMiddleware, async (req, res) => {
   try {
@@ -148,10 +204,8 @@ router.get("/my", authMiddleware, async (req, res) => {
 
     res.json(result.rows);
   } catch (error) {
-    // Ini agar jika ada typo kolom lain, langsung kelihatan di terminal
     console.error("=== EROR SQL BACKEND ===");
     console.error(error);
-
     res.status(500).json({
       message: "Server Error",
     });
